@@ -12,6 +12,8 @@ COPY bin/* /usr/bin/
 COPY startup.sh /
 COPY .vimrc $HOME/
 COPY .bashrc $HOME/
+COPY .condarc $HOME/
+COPY fslinstaller.py.mgb $HOME/fslinstaller.py
 
     # install required libraries
 RUN ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime && \
@@ -106,18 +108,17 @@ RUN ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime && \
     pip install . && \
     pip install plumbum && \
     conda deactivate && \
+    cd && \
     # && \
     # avoid git dubious ownership error && \
     git config --system --add safe.directory '*' && \
     # && \
     # install FSL && \
-    echo "Downloading FSL installer" && \
-    wget https://fsl.fmrib.ox.ac.uk/fsldownloads/fslinstaller.py -O fslinstaller.py > /dev/null 2>&1 && \
     echo "Installing FSL" && \
     V=6.0.7 && \
-    python fslinstaller.py -V $V -d $HOME/fsl-$V > /dev/null && \
+    python fslinstaller.py -V 6.0.7.18 -d $HOME/fsl-$V --miniconda Miniconda3-latest-Linux-x86_64.sh --cuda none --skip_ssl_verify --no_env > /dev/null && \
     cd $HOME/fsl-$V/share/fsl/bin && \
-    ln -s eddy_cuda10.2 eddy_cuda && \
+    ln -s eddy_cuda11.0 eddy_cuda && \
     cd && \
     # setup FSL environment && \
     export FSLDIR=$HOME/fsl-$V && \
