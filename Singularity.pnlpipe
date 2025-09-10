@@ -18,7 +18,7 @@ From: redhat/ubi9:9.5-1738643550
 %post
     #
     # set up user and working directory
-    mkdir /home/pnlbwh
+    mkdir -p /home/pnlbwh
     cd /home/pnlbwh
     export HOME=`pwd`
     #
