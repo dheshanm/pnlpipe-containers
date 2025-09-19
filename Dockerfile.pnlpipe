@@ -1,155 +1,290 @@
-FROM redhat/ubi9:9.5-1738643550
+# syntax=docker/dockerfile:1.4
+# Multi-stage optimized Dockerfile for PNL Pipeline Container
+# Uses minimal base image with controlled parallelization to avoid over-utilization
+# Each Python environment builds with resource limits for stability
+# Heavy software and envs installed under /opt for fast UID/GID remap at startup
 
-LABEL maintainer="Tashrif Billah <tbillah@bwh.harvard.edu>"
+# =============================================================================
+# Global Arguments
+# =============================================================================
+ARG CMAKE_VER=3.31.0
+ARG DCM2NIIX_REF=v1.0.20250506
+ARG ANTS_REF=v2.6.2
+ARG UKF_REF=v2.1
+ARG FSL_SHORT=6.0.7
+ARG FSL_VER=6.0.7.18
+ARG FS_VER=8.1.0
 
-    # set up working directory, redefine home directory, remain root user
-WORKDIR /home/pnlbwh
-ENV HOME=/home/pnlbwh
-ENV USER="root"
-ENV LANG=en_US.UTF-8
+ARG BUILD_JOBS_SMALL=2
+ARG BUILD_JOBS_MEDIUM=4
+ARG BUILD_DATE
 
-COPY bin/* /usr/bin/
-COPY startup.sh /
-COPY .vimrc $HOME/
-COPY .bashrc $HOME/
-COPY .condarc $HOME/
-COPY fslinstaller.py.mgb $HOME/fslinstaller.py
+# =============================================================================
+# Base builder stage - minimal image with build tools
+# =============================================================================
+FROM redhat/ubi9-minimal:latest AS compiler-base
 
-    # install required libraries
-RUN ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime && \
-    yum -y install wget file bzip2 which vim git make unzip libstdc++-static mesa-libGL bc libSM && \
-    yum -y install gcc-c++ openssl-devel libX11-devel libXrender libxcrypt-compat libgfortran hostname libXt && \
-    # && \
-    TCSH=tcsh-6.22.03-6.el9.x86_64.rpm && \
-    wget https://dl.rockylinux.org/pub/rocky/9/devel/x86_64/os/Packages/t/$TCSH && \
-    rpm -ivh $TCSH && \
-    # && \
-    yum clean all && \
-    # && \
-    # install Cmake && \
-    CMAKE=3.31.0 && \
-    wget https://github.com/Kitware/CMake/releases/download/v${CMAKE}/cmake-${CMAKE}.tar.gz && \
-    tar -xzf cmake-${CMAKE}.tar.gz && \
-    cd cmake-${CMAKE} && mkdir build && cd build && \
-    ../bootstrap --parallel=4 && make -j4 && \
-    cd && \
-    # && \
-    # install dcm2niix && \
-    git clone https://github.com/rordenlab/dcm2niix.git && \
-    cd dcm2niix && mkdir build && cd build && \
-    /home/pnlbwh/cmake-${CMAKE}/build/bin/cmake .. && make -j4 && \
-    mv bin/dcm2niix /usr/bin/ && \
-    cd && rm -rf $HOME/dcm2niix && \
-    # && \
-    # install ANTs && \
-    git clone https://github.com/ANTsX/ANTs.git && \
-    cd ANTs && mkdir build && cd build && \
-    /home/pnlbwh/cmake-${CMAKE}/build/bin/cmake .. && make -j4 && \
-    cd && \
-    # && \
-    # install ukftractography && \
-    git clone https://github.com/pnlbwh/ukftractography.git && \
-    cd ukftractography && mkdir build && cd build && \
-    /home/pnlbwh/cmake-${CMAKE}/build/bin/cmake .. && make -j4 && \
-    cd && \
-    # && \
-    # install miniconda3 && \
-    wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O Miniconda3-latest-Linux-x86_64.sh && \
-    /bin/bash Miniconda3-latest-Linux-x86_64.sh -b -p miniconda3/ && \
-    source miniconda3/bin/activate && \
-    # && \
-    # install pnlpipe && \
-    git clone https://github.com/pnlbwh/pnlNipype.git && \
-    conda create -y -n pnlpipe9 -c conda-forge --override-channels python && \
-    conda activate pnlpipe9 && \
-    cd pnlNipype && \
-    pip install -r requirements.txt && \
-    conda deactivate && \
-    cd && \
-    # && \
-    git clone https://github.com/pnlbwh/luigi-pnlpipe.git && \
-    git clone https://github.com/pnlbwh/HCPpipelines.git && \
-    git clone https://github.com/pnlbwh/conversion.git && \
-    # && \
-    # CNN-Diffusion-MRIBrain-Segmentation && \
-    git clone https://github.com/pnlbwh/CNN-Diffusion-MRIBrain-Segmentation.git && \
+ARG CMAKE_VER
+ARG TARGETARCH
+
+RUN if [ "$TARGETARCH" != "amd64" ]; then \
+        echo "ERROR: This container requires x86_64 architecture. Detected: $TARGETARCH"; \
+        exit 1; \
+    fi
+
+RUN --mount=type=cache,target=/var/cache/dnf \
+    microdnf install -y \
+        wget ca-certificates \
+        tar gzip bzip2 unzip \
+        gcc gcc-c++ make patch \
+        git \
+        openssl-devel \
+        libstdc++-static \
+    && microdnf clean all
+
+WORKDIR /build
+
+# CMake
+RUN --mount=type=cache,target=/tmp/download-cache \
+    set -e; \
+    CMAKE_TGZ="cmake-${CMAKE_VER}-linux-x86_64.tar.gz"; \
+    CMAKE_URL="https://github.com/Kitware/CMake/releases/download/v${CMAKE_VER}/${CMAKE_TGZ}"; \
+    wget -q "$CMAKE_URL" -O "/tmp/download-cache/${CMAKE_TGZ}"; \
+    tar -xzf "/tmp/download-cache/${CMAKE_TGZ}"; \
+    mv "cmake-${CMAKE_VER}-linux-x86_64" "cmake"
+
+# =============================================================================
+# C++ Application Builders
+# =============================================================================
+FROM compiler-base AS dcm2niix-builder
+ARG DCM2NIIX_REF
+ARG BUILD_JOBS_SMALL
+RUN git clone --depth 1 --branch "$DCM2NIIX_REF" https://github.com/rordenlab/dcm2niix.git && \
+    /build/cmake/bin/cmake -S dcm2niix -B dcm2niix/build -DCMAKE_BUILD_TYPE=Release && \
+    /build/cmake/bin/cmake --build dcm2niix/build --parallel ${BUILD_JOBS_SMALL}
+
+FROM compiler-base AS ants-builder
+ARG ANTS_REF
+ARG BUILD_JOBS_MEDIUM
+RUN git clone --depth 1 --branch "$ANTS_REF" https://github.com/ANTsX/ANTs.git && \
+    /build/cmake/bin/cmake -S ANTs -B ANTs/build -DCMAKE_BUILD_TYPE=Release && \
+    /build/cmake/bin/cmake --build ANTs/build --parallel ${BUILD_JOBS_MEDIUM}
+
+FROM compiler-base AS ukf-builder
+ARG UKF_REF
+ARG BUILD_JOBS_MEDIUM
+RUN --mount=type=cache,target=/var/cache/dnf \
+    microdnf install -y \
+    libX11-devel \
+    libgfortran \
+    mesa-libGL libSM libXrender libXt \
+    && microdnf clean all
+RUN git clone --depth 1 --branch "$UKF_REF" https://github.com/pnlbwh/ukftractography.git && \
+    mkdir -p ukftractography/build && \
+    /build/cmake/bin/cmake -S ukftractography -B ukftractography/build -DCMAKE_BUILD_TYPE=Release && \
+    /build/cmake/bin/cmake --build ukftractography/build --parallel ${BUILD_JOBS_MEDIUM} --verbose
+
+# =============================================================================
+# Consolidated Python Environment Builder (installs into /opt/conda)
+# =============================================================================
+FROM redhat/ubi9-minimal:latest AS python-env-builder
+
+RUN --mount=type=cache,target=/var/cache/dnf \
+    microdnf install -y wget ca-certificates git tar gzip && microdnf clean all
+
+WORKDIR /build
+COPY .condarc /root/.condarc
+
+# Install Miniforge to /opt/conda
+RUN --mount=type=cache,target=/tmp/download-cache \
+    wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O Miniforge3.sh && \
+    bash Miniforge3.sh -b -p /opt/conda && \
+    rm -f Miniforge3.sh
+
+ENV PATH="/opt/conda/bin:$PATH"
+
+# Clone Python repositories (read-only, will live under /opt/pnl)
+RUN --mount=type=cache,target=/root/.cache/git \
+    git clone --depth 1 https://github.com/pnlbwh/pnlNipype.git && \
+    git clone --depth 1 https://github.com/pnlbwh/luigi-pnlpipe.git && \
+    git clone --depth 1 https://github.com/pnlbwh/HCPpipelines.git && \
+    git clone --depth 1 https://github.com/pnlbwh/conversion.git && \
+    git clone --depth 1 https://github.com/pnlbwh/CNN-Diffusion-MRIBrain-Segmentation.git && \
+    git clone --depth 1 --single-branch --branch pnl https://github.com/pnlbwh/HD-BET.git && \
+    git clone --depth 1 https://github.com/demianw/tract_querier.git
+
+# Download CNN model
+RUN --mount=type=cache,target=/tmp/download-cache \
     cd CNN-Diffusion-MRIBrain-Segmentation && \
-    wget https://github.com/pnlbwh/CNN-Diffusion-MRIBrain-Segmentation/releases/download/v0.3/model_folder.tar.gz && \
-    tar -xzvf model_folder.tar.gz && rm -f model_folder.tar.gz && \
-    conda create -y -n dmri_seg python=3.11 -c conda-forge --override-channels && \
-    conda activate dmri_seg && \
-    pip install 'tensorflow[and-cuda]==2.15.1' && \
-    pip install scikit-image git+https://github.com/pnlbwh/conversion.git && \
-    conda deactivate && \
-    cd && \
-    # && \
-    # HD-BET && \
-    conda create -y -n hd-bet python=3.9 -c conda-forge --override-channels && \
-    conda activate hd-bet && \
-    git clone --single-branch --branch pnl https://github.com/pnlbwh/HD-BET.git && \
-    cd HD-BET/ && \
-    pip install . && \
-    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
-    conda deactivate && \
-    # && \
-    # download HD-BET params && \
-    cd /home/pnlbwh/miniconda3/envs/hd-bet/lib/python3.9/site-packages/HD_BET && \
-    mkdir -p params && cd params && \
-    for i in {0..4}; do wget https://zenodo.org/record/2540695/files/${i}.model; done && \
-    cd && \
-    # && \
-    # whitematteranalysis && \
-    conda create -y -n wma python=3.9 -c conda-forge --override-channel && \
-    conda activate wma && \
-    pip install git+https://github.com/SlicerDMRI/whitematteranalysis.git && \
-    # && \
-    git clone https://github.com/demianw/tract_querier.git && \
-    cd tract_querier && \
-    pip install . && \
-    pip install plumbum && \
-    conda deactivate && \
-    cd && \
-    # && \
-    # avoid git dubious ownership error && \
-    git config --system --add safe.directory '*' && \
-    # && \
-    # install FSL && \
-    echo "Installing FSL" && \
-    V=6.0.7 && \
-    python fslinstaller.py -V 6.0.7.18 -d $HOME/fsl-$V --miniconda Miniconda3-latest-Linux-x86_64.sh --cuda none --skip_ssl_verify --no_env > /dev/null && \
-    cd $HOME/fsl-$V/share/fsl/bin && \
-    ln -s eddy_cuda11.0 eddy_cuda && \
-    cd && \
-    # setup FSL environment && \
-    export FSLDIR=$HOME/fsl-$V && \
-    rm -f fslinstaller.py && \
-    # && \
-    # install freesurfer && \
-    echo "Downloading FreeSurfer" && \
-    V=7.4.1 && \
-    TAR=freesurfer-linux-centos8_x86_64-7.4.1.tar.gz && \
-    wget https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/${V}/${TAR} > /dev/null 2>&1 && \
-    echo "Unzipping FreeSurfer tar ball" && \
-    tar -xzf $TAR && rm -f $TAR && \
-    mv freesurfer freesurfer-$V && \
-    # && \
-    # install MCR for -subfields && \
-    export FREESURFER_HOME=/home/pnlbwh/freesurfer-$V && \
-    source ${FREESURFER_HOME}/SetUpFreeSurfer.sh && \
-    fs_install_mcr R2019b && \
-    # && \
-    # clean up && \
-    cd && \
-    conda deactivate && \
-    source miniconda3/bin/activate && \
-    conda clean -y --all && \
-    rm -rf .cache/pip/ Miniconda3-latest-Linux-x86_64.sh && \
-    rm -f cmake-3.31.0.tar.gz tcsh-6.22.03-6.el9.x86_64.rpm
+    wget -q https://github.com/pnlbwh/CNN-Diffusion-MRIBrain-Segmentation/releases/download/v0.3/model_folder.tar.gz && \
+    tar -xzf model_folder.tar.gz && rm -f model_folder.tar.gz
 
+# Create environments (cached)
+RUN --mount=type=cache,target=/root/.cache/pip --mount=type=cache,target=/opt/conda/pkgs \
+    conda create -y -n pnlpipe9 -c conda-forge --override-channels python && \
+    conda run -n pnlpipe9 python -m pip install -r pnlNipype/requirements.txt && \
+    conda clean -y --all
 
-    # change permission of startup script
-RUN chmod +x /startup.sh
+RUN --mount=type=cache,target=/root/.cache/pip --mount=type=cache,target=/opt/conda/pkgs \
+    conda create -y -n dmri_seg -c conda-forge --override-channels python=3.11 && \
+    conda run -n dmri_seg python -m pip install scikit-image "git+https://github.com/pnlbwh/conversion.git" tensorflow==2.15.1 && \
+    conda clean -y --all
 
+RUN --mount=type=cache,target=/root/.cache/pip --mount=type=cache,target=/opt/conda/pkgs \
+    conda create -y -n hd-bet -c conda-forge --override-channels python=3.9 && \
+    conda run -n hd-bet python -m pip install HD-BET/ && \
+    conda run -n hd-bet python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio && \
+    conda clean -y --all
+
+# HD-BET params into the installed package directory
+RUN --mount=type=cache,target=/tmp/download-cache \
+    HDBET_DIR="$(conda run -n hd-bet python -c 'import os, HD_BET; print(os.path.dirname(HD_BET.__file__))')" && \
+    mkdir -p "${HDBET_DIR}/params" && \
+    for i in 0 1 2 3 4; do \
+        n=0; \
+        until wget -q -O "${HDBET_DIR}/params/${i}.model" "https://zenodo.org/record/2540695/files/${i}.model"; do \
+            n=$((n+1)); \
+            if [ "$n" -ge 3 ]; then \
+                echo "Failed to download ${i}.model after 3 attempts"; \
+                exit 1; \
+            fi; \
+            sleep 2; \
+        done; \
+    done
+
+RUN --mount=type=cache,target=/root/.cache/pip --mount=type=cache,target=/opt/conda/pkgs \
+    conda create -y -n wma -c conda-forge --override-channels python=3.9 && \
+    conda run -n wma python -m pip install "git+https://github.com/SlicerDMRI/whitematteranalysis.git" tract_querier/ plumbum && \
+    conda clean -y --all
+
+# =============================================================================
+# FSL Builder
+# =============================================================================
+FROM redhat/ubi9-minimal:latest AS fsl-builder
+ARG FSL_VER
+ARG FSL_SHORT
+RUN --mount=type=cache,target=/var/cache/dnf \
+    microdnf install -y wget ca-certificates findutils python3 tar gzip && microdnf clean all
+WORKDIR /build
+COPY .condarc /root/.condarc
+COPY fslinstaller.py.mgb /build/fslinstaller.py
+RUN --mount=type=cache,target=/tmp/download-cache \
+    wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/download-cache/Miniforge3.sh && \
+    python3 fslinstaller.py -V "${FSL_VER}" -d "/build/fsl-${FSL_SHORT}" --miniconda /tmp/download-cache/Miniforge3.sh --cuda none --skip_ssl_verify --no_env && \
+    ln -sfn eddy_cuda11.0 "/build/fsl-${FSL_SHORT}/share/fsl/bin/eddy_cuda" && \
+    rm -f fslinstaller.py
+
+# =============================================================================
+# FreeSurfer Builder
+# =============================================================================
+FROM redhat/ubi9-minimal:latest AS freesurfer-builder
+ARG FS_VER
+RUN --mount=type=cache,target=/var/cache/dnf \
+    microdnf install -y \
+        wget ca-certificates tar gzip unzip which findutils cpio \
+        java-17-openjdk \
+    && microdnf clean all
+# tcsh (required by FreeSurfer)
+RUN --mount=type=cache,target=/tmp/download-cache \
+    set -e; \
+    TCSH_PKG=tcsh-6.22.03-6.el9.x86_64.rpm && \
+    wget -q https://dl.rockylinux.org/pub/rocky/9/devel/x86_64/os/Packages/t/${TCSH_PKG} -O /tmp/download-cache/${TCSH_PKG} && \
+    rpm -ivh /tmp/download-cache/${TCSH_PKG}
+WORKDIR /build
+RUN --mount=type=cache,target=/tmp/download-cache \
+    set -e; \
+    RPM="freesurfer-Rocky8-${FS_VER}-1.x86_64.rpm"; \
+    wget -q "https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/${FS_VER}/${RPM}" -O "/tmp/download-cache/${RPM}"; \
+    rpm2cpio "/tmp/download-cache/${RPM}" | cpio -idmv; \
+    mv "usr/local/freesurfer/${FS_VER}-1" "freesurfer-${FS_VER}"; \
+    rm -rf usr; \
+    export FREESURFER_HOME="/build/freesurfer-${FS_VER}"; \
+    source "${FREESURFER_HOME}/SetUpFreeSurfer.sh"; \
+    fs_install_mcr R2019b
+
+# =============================================================================
+# Final runtime stage
+# =============================================================================
+FROM redhat/ubi9-minimal:latest
+
+LABEL org.opencontainers.image.authors="Tashrif Billah <tbillah@bwh.harvard.edu>"
+LABEL org.opencontainers.image.description="PNL Pipeline Container with FSL, FreeSurfer, ANTs, dcm2niix, ukftractography, and Python environments for PNL Nipype, DMRI Segmentation, HD-BET, and White Matter Analysis"
+LABEL org.opencontainers.image.url="https://github.com/pnlbwh/pnlpipe-containers"
+LABEL org.opencontainers.image.source="https://github.com/pnlbwh/pnlpipe-containers"
+LABEL org.opencontainers.image.vendor="Psychiatry Neuroimaging Laboratory, Brigham and Women's Hospital"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.title="PNL Pipeline Container"
+LABEL org.opencontainers.image.created=${BUILD_DATE}
+
+ARG CMAKE_VER
+ARG FSL_SHORT
+ARG FS_VER
+
+ENV HOME=/home/pnlbwh \
+    USER=pnlbwh \
+    LANG=en_US.UTF-8 \
+    TZ=America/New_York
+
+# Runtime deps
+RUN --mount=type=cache,target=/var/cache/dnf \
+    microdnf install -y \
+        wget ca-certificates tzdata findutils file \
+        bzip2 unzip tar which vim git hostname \
+        glibc-langpack-en tree \
+        libgfortran \
+        mesa-libGL libSM libX11 libXrender libXt libxcrypt-compat \
+        # User management
+        shadow-utils util-linux \
+        # FreeSurfer dependencies
+        libgomp bc perl perl-interpreter \
+        procps-ng \
+    && rpm -e --nodeps coreutils-single || true \
+    && microdnf install -y coreutils \
+    && ln -sf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
+    && microdnf clean all
+
+# tcsh (required by FreeSurfer)
+RUN --mount=type=cache,target=/tmp/download-cache \
+    set -e; \
+    TCSH_PKG=tcsh-6.22.03-6.el9.x86_64.rpm && \
+    wget -q https://dl.rockylinux.org/pub/rocky/9/devel/x86_64/os/Packages/t/${TCSH_PKG} -O /tmp/download-cache/${TCSH_PKG} && \
+    rpm -ivh /tmp/download-cache/${TCSH_PKG}
+
+# Create non-root user (home will remain small)
+RUN useradd -m -s /bin/bash -d /home/pnlbwh pnlbwh
+WORKDIR /home/pnlbwh
+
+# Copy Python envs and repositories into /opt
+COPY --from=python-env-builder /opt/conda /opt/conda
+COPY --from=python-env-builder /build/pnlNipype /opt/pnl/pnlNipype
+COPY --from=python-env-builder /build/luigi-pnlpipe /opt/pnl/luigi-pnlpipe
+COPY --from=python-env-builder /build/HCPpipelines /opt/pnl/HCPpipelines
+COPY --from=python-env-builder /build/conversion /opt/pnl/conversion
+COPY --from=python-env-builder /build/CNN-Diffusion-MRIBrain-Segmentation /opt/pnl/CNN-Diffusion-MRIBrain-Segmentation
+COPY --from=python-env-builder /build/HD-BET /opt/pnl/HD-BET
+COPY --from=python-env-builder /build/tract_querier /opt/pnl/tract_querier
+
+# Copy compiled/built software into /opt or /usr/local/bin
+COPY --from=dcm2niix-builder /build/dcm2niix/build/bin/dcm2niix /usr/local/bin/dcm2niix
+COPY --from=fsl-builder /build/fsl-${FSL_SHORT} /opt/fsl-${FSL_SHORT}
+COPY --from=freesurfer-builder /build/freesurfer-${FS_VER} /opt/freesurfer-${FS_VER}
+COPY --from=ukf-builder /build/ukftractography /opt/ukftractography
+COPY --from=ants-builder /build/ANTs /opt/ANTs
+
+# Ensure broad read/execute on software directories (keep owned by root)
+RUN chmod -R a+rX /opt && \
+    git config --system --add safe.directory '*'
+
+# User shell configuration and helper scripts
+COPY .bashrc /home/pnlbwh/.bashrc
+COPY .condarc /home/pnlbwh/.condarc
+RUN chown pnlbwh:pnlbwh /home/pnlbwh/.bashrc /home/pnlbwh/.condarc
+
+COPY bin/ /usr/local/bin/
+COPY startup.sh /startup.sh
+RUN chmod +x /startup.sh && mkdir -p /home/pnlbwh/bin && chown pnlbwh:pnlbwh /home/pnlbwh/bin
+
+# Make conda base binaries visible (optional; envs are set in .bashrc)
+ENV PATH="/opt/conda/bin:$PATH"
 
 ENTRYPOINT ["/startup.sh"]
-
