@@ -1,0 +1,7 @@
+# Ignore anything not needed for build context
+!Dockerfile
+!startup.sh
+!bin/
+!.bashrc
+!.condarc
+!fslinstaller.py.mgb

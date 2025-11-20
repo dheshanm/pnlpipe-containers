@@ -1,0 +1,80 @@
+#!/bin/tcsh -f
+
+#
+# fsr-getxopts
+#
+# USAGE: fsr-getxopts key xoptsfile
+#
+
+# Parses expert options for freesurfer recon.  Looks in xoptsfile for
+# a line with key as the first item, then returns the rest of the
+# items on that line. Ignores all lines with # in them, regardless of
+# where on the line they occur. If multiple files are passed then it
+# returns all options for matches in the order of the files passed on
+# the command line. A file should not have multiple occurances of a
+# key or else it will not properly generate the options (but not
+# crash)
+
+#
+# Eg, if the file expert.opts contains:
+#   mri_em_register -p .5
+# Then
+#   fsr-getxopts mri_em_register expert.opts
+# will return
+#   -p .5
+#
+# Original Author: Doug Greve
+#
+# Copyright © 2021 The General Hospital Corporation (Boston, MA) "MGH"
+#
+# Terms and conditions for use, reproduction, distribution and contribution
+# are found in the 'FreeSurfer Software License Agreement' contained
+# in the file 'LICENSE' found in the FreeSurfer distribution, and here:
+#
+# https://surfer.nmr.mgh.harvard.edu/fswiki/FreeSurferSoftwareLicense
+#
+# Reporting: freesurfer@nmr.mgh.harvard.edu
+#
+#
+
+set VERSION = 'fsr-getxopts @FS_VERSION@';
+
+if($#argv < 2) then
+  # Dont print out anything here otherwise mess up recon-all
+  # fsr-getxopts key xoptsfile1 xoptsfile2 ...
+  exit 0;
+endif
+
+set key           = $argv[1]; shift
+set xoptsfilelist = ($argv)
+
+# Go thru the list of xopts files
+set optslist = ()
+foreach xoptsfile ($xoptsfilelist)
+  # If it is not there, then an error
+  if(! -e $xoptsfile) then
+    echo "ERROR: cannot find $xoptsfile"
+    exit 1;
+  endif
+
+  # Search for the command in the xoptsfile
+  # Before 10/16/24, it used this grep command. But this  is
+  # not specific enough because it will find any match when
+  # we only want the first item
+  #set tmp = `grep $key  | wc -l`;
+
+  # This awk works on the first item only. Note that any lines with #
+  # are ignored regardless of where the # occurs
+  set tmp = `cat $xoptsfile | grep -v \# | awk -v key=$key '{if($1 == key) print $0}'`
+
+  # If the key is not in the file, move on to the next xopts file
+  if($#tmp == 0) continue
+  # Note that it accumulates a list of options from all files in the
+  # order of the files on the command line. This is a different
+  # behavior than pre 10/16/24 where it would only take the options
+  # from the first file.
+  set optslist = ($optslist "$tmp[2-$#tmp]")
+end
+echo "$optslist"
+
+exit 0
