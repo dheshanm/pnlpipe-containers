@@ -22,7 +22,7 @@ ARG BUILD_DATE
 # =============================================================================
 # Base builder stage - minimal image with build tools
 # =============================================================================
-FROM redhat/ubi9-minimal:latest AS compiler-base
+FROM redhat/ubi9-minimal:9.7 AS compiler-base
 
 ARG CMAKE_VER
 ARG TARGETARCH
@@ -45,13 +45,13 @@ RUN --mount=type=cache,target=/var/cache/dnf \
 WORKDIR /build
 
 # CMake
-RUN --mount=type=cache,target=/tmp/download-cache \
-    set -e; \
+RUN set -e; \
     CMAKE_TGZ="cmake-${CMAKE_VER}-linux-x86_64.tar.gz"; \
     CMAKE_URL="https://github.com/Kitware/CMake/releases/download/v${CMAKE_VER}/${CMAKE_TGZ}"; \
-    wget -q "$CMAKE_URL" -O "/tmp/download-cache/${CMAKE_TGZ}"; \
-    tar -xzf "/tmp/download-cache/${CMAKE_TGZ}"; \
-    mv "cmake-${CMAKE_VER}-linux-x86_64" "cmake"
+    wget -q "$CMAKE_URL" -O "${CMAKE_TGZ}"; \
+    tar -xzf "${CMAKE_TGZ}"; \
+    mv "cmake-${CMAKE_VER}-linux-x86_64" "cmake"; \
+    rm -f "${CMAKE_TGZ}"
 
 # =============================================================================
 # C++ Application Builders
@@ -87,12 +87,8 @@ RUN git clone --depth 1 --branch "$UKF_REF" https://github.com/pnlbwh/ukftractog
 # =============================================================================
 # Consolidated Python Environment Builder (installs into /opt/conda)
 # =============================================================================
-FROM redhat/ubi9-minimal:latest AS python-env-builder
+FROM compiler-base AS python-env-builder
 
-RUN --mount=type=cache,target=/var/cache/dnf \
-    microdnf install -y wget ca-certificates git tar gzip && microdnf clean all
-
-WORKDIR /build
 COPY .condarc /root/.condarc
 
 # Install Miniforge to /opt/conda
@@ -160,7 +156,7 @@ RUN --mount=type=cache,target=/root/.cache/pip --mount=type=cache,target=/opt/co
 # =============================================================================
 # FSL Builder
 # =============================================================================
-FROM redhat/ubi9-minimal:latest AS fsl-builder
+FROM redhat/ubi9-minimal:9.7 AS fsl-builder
 ARG FSL_VER
 ARG FSL_SHORT
 RUN --mount=type=cache,target=/var/cache/dnf \
@@ -177,7 +173,7 @@ RUN --mount=type=cache,target=/tmp/download-cache \
 # =============================================================================
 # FreeSurfer Builder
 # =============================================================================
-FROM redhat/ubi9-minimal:latest AS freesurfer-builder
+FROM redhat/ubi9-minimal:9.7 AS freesurfer-builder
 ARG FS_VER
 RUN --mount=type=cache,target=/var/cache/dnf \
     microdnf install -y \
@@ -209,7 +205,7 @@ RUN chmod a+x /build/freesurfer-${FS_VER}/bin/fsr-getxopts
 # =============================================================================
 # Final runtime stage
 # =============================================================================
-FROM redhat/ubi9-minimal:latest
+FROM redhat/ubi9-minimal:9.7
 
 LABEL org.opencontainers.image.authors="Tashrif Billah <tbillah@bwh.harvard.edu>"
 LABEL org.opencontainers.image.description="PNL Pipeline Container with FSL, FreeSurfer, ANTs, dcm2niix, ukftractography, and Python environments for PNL Nipype, DMRI Segmentation, HD-BET, and White Matter Analysis"
@@ -230,11 +226,13 @@ ENV HOME=/home/pnlbwh \
     TZ=America/New_York
 
 # Runtime deps
+# First remove coreutils-single to avoid conflicts, then install packages
 RUN --mount=type=cache,target=/var/cache/dnf \
-    microdnf install -y \
+    rpm -e --nodeps coreutils-single || true \
+    && microdnf install -y \
         wget ca-certificates tzdata findutils file \
         bzip2 unzip tar which vim git hostname \
-        glibc-langpack-en tree \
+        glibc-langpack-en \
         libgfortran \
         mesa-libGL libSM libX11 libXrender libXt libxcrypt-compat \
         # User management
@@ -242,10 +240,16 @@ RUN --mount=type=cache,target=/var/cache/dnf \
         # FreeSurfer dependencies
         libgomp bc perl perl-interpreter \
         procps-ng \
-    && rpm -e --nodeps coreutils-single || true \
-    && microdnf install -y coreutils \
+        coreutils \
     && ln -sf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
     && microdnf clean all
+
+# Install tree directly from Rocky Linux (not available in UBI minimal repos)
+RUN --mount=type=cache,target=/tmp/download-cache \
+    set -e; \
+    TREE_PKG=tree-1.8.0-10.el9.x86_64.rpm && \
+    wget -q https://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/Packages/t/${TREE_PKG} -O /tmp/download-cache/${TREE_PKG} && \
+    rpm -ivh /tmp/download-cache/${TREE_PKG}
 
 # tcsh (required by FreeSurfer)
 RUN --mount=type=cache,target=/tmp/download-cache \
