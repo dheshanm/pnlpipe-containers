@@ -289,6 +289,8 @@ COPY .condarc /home/pnlbwh/.condarc
 RUN chown pnlbwh:pnlbwh /home/pnlbwh/.bashrc /home/pnlbwh/.condarc
 
 COPY bin/ /usr/local/bin/
+RUN chmod +x /usr/local/bin/*
+
 COPY startup.sh /startup.sh
 RUN chmod +x /startup.sh && mkdir -p /home/pnlbwh/bin && chown pnlbwh:pnlbwh /home/pnlbwh/bin
 
