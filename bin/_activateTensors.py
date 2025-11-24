@@ -1,5 +1,5 @@
 #!/bin/bash
 
-PREFIX=${ROOT}/miniconda3/envs/wma/
-${PREFIX}/bin/python ${ROOT}/pnlNipype/scripts/activateTensors.py $@
+PREFIX=/opt/conda/envs/wma/
+${PREFIX}/bin/python /opt/pnl/pnlNipype/scripts/activateTensors.py $@
 
