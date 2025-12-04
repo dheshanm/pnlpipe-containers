@@ -1,5 +1,5 @@
 #!/bin/bash 
-# Original at /data/pnlx/Collaborators/EDCRP/PANDAS/scripts/run_fs8.1.0_with_run.sh
+# Original at /data/pnlx/Collaborators/EDCRP/PANDAS/scripts/run_fs810_no_expert.sh
 
 set -euo pipefail
 trap 'echo "Script failed at line $LINENO"; exit 1' ERR
@@ -14,10 +14,10 @@ done
 
 # ===== EDIT BELOW THIS LINE =====
 
-export SUBJECT_ID="sub-$1"
+export SUBJECT_ID="sub-ne00101"
 export SESSION_ID="ses-01"
 # set to e.g. "01" to use _run-01_T1w.nii.gz
-export RUN_ID="2"   # e.g. RUN_ID="01"
+export RUN_ID="1"   # e.g. RUN_ID="01"
 
 export HOLDING_DIR="/PHShome/dm1447/scratch/fs_810_workspace"
 export TAG="fs810_multi_part_patched"
@@ -43,14 +43,14 @@ if [ ! -x "$SINGULARITY_BIN" ]; then
     exit 1
 fi
 
-IDENTIFIER="${SUBJECT_ID}-${SESSION_ID}"
+IDENTIFIER="${SUBJECT_ID}-${SESSION_ID}-RUN${RUN_ID}"
 export HOLDING_DIR="${HOLDING_DIR}_${USER}_$(date +%s)_${IDENTIFIER}"
 
-PIPELINE_OUTPUT_DIR="$PIPELINE_OUTPUT_DIR/$SUBJECT_ID/$SESSION_ID/anat"
+PIPELINE_OUTPUT_DIR="$PIPELINE_OUTPUT_DIR/$SUBJECT_ID/$SESSION_ID/run-${RUN_ID}/anat"
 FS_OUTPUT_DIR="$PIPELINE_OUTPUT_DIR/fs8.1.0"
 # Skip if output already exists
 if [ -d "$FS_OUTPUT_DIR" ]; then
-    echo "Output directory already exists for subject $SUBJECT_ID, session $SESSION_ID at:"
+    echo "Output directory already exists for subject $SUBJECT_ID, session $SESSION_ID, run $RUN_ID at:"
     echo "  $FS_OUTPUT_DIR"
     echo "Skipping processing."
     exit 0
