@@ -12,3 +12,15 @@ export PNLPIPE_TMPDIR=/data/pnlx/home/dm1447/tmp
 cd
 source .bashrc
 ```
+
+## Building outside MGB Environment
+
+To build the Docker image outside of the MGB environment, remove the `channel_alias: https://anaconda.mgb.org/` line from the `.condarc` file before building the Docker image.
+
+Also remove the following line at line 3118 in `fslinstaller.py.mgb`:
+
+```python
+condarc += 'channel_alias: https://anaconda.mgb.org/\n'
+```
+
+This line forces the use of MGB's Anaconda proxy, which might not be accessible outside the MGB network.
